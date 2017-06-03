@@ -11,6 +11,7 @@
   "license": "MIT",
   "dependencies": {
     "discovery-channel": "^5.4.4",
+    "end-of-stream": "^1.4.0",
     "fixed-size-chunk-hashing": "^1.0.0",
     "fs-chunk-store": "^1.6.5",
     "msgpack5-stream": "^1.0.0",
