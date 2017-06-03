@@ -2,51 +2,39 @@
 
 var fs = require('fs')
 var net = require('net')
-var pump = require('pump')
 var DC = require('discovery-channel')
-var channel = DC({ dht: true }) // when testing, disable dht `{dht: false}`
-var Hash = require('stream-hash')
+var msgpack = require('msgpack5-stream')
 
-var id = process.argv[2] || 'matteo!!'
+var id = process.argv[2]
+var chunk = process.argv[3]
 
+if (!id || !chunk) {
+  console.log('Usage: node client.js [id] [chunk]')
+  process.exit(1)
+}
+
+var channel = DC({dht: false}) // set true to work over the internet
 channel.join(id)
 
-var streams = new Set()
-var closing = false
+channel.once('peer', function (peerId, peer, type) {
+  console.log('New peer %s:%s found via %s', peer.host, peer.port, type)
 
-channel.on('peer', function (_id, peer, type) {
-  console.log('peer found', peer)
-  var stream = net.connect(peer.port, peer.host)
+  var socket = net.connect(peer.port, peer.host)
 
-  streams.add(stream)
+  // Wrap our TCP socket with a msgpack5 protocol wrapper
+  var protocol = msgpack(socket)
 
-  var hash = Hash({ algorithm: 'sha256', encoding: 'hex' }, function (hash) {
-    if (closing) {
-      return
-    }
-
-    console.log('computed', hash)
-    if (hash !== id) {
-      console.log('HASH DOES NOT MATCH')
-    } else {
-      console.log('ok')
-    }
-  })
-  pump(stream, hash, fs.createWriteStream('file-' + Date.now()), function (err) {
-    if (closing) {
-      return
-    }
-
-    if (err) {
-      console.log('wrong peer', err.message)
-      return
-    }
-
-    streams.delete(stream)
-
-    closing = true
-
-    streams.forEach((s) => s.destroy())
+  protocol.on('data', function (msg) {
+    // For now just output the message we got from the server
+    console.log(msg)
+    protocol.destroy()
     channel.destroy()
+  })
+
+  console.log('Fetching chunk %d from %s...', chunk, id)
+
+  protocol.write({
+    type: 'request',
+    index: chunk
   })
 })
