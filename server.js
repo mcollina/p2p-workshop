@@ -5,12 +5,14 @@ var net = require('net')
 var DC = require('discovery-channel')
 var msgpack = require('msgpack5-stream')
 var fsChunkStore = require('fs-chunk-store')
+var hasher = require('fixed-size-chunk-hashing')
+var crypto = require('crypto')
+var pump = require('pump')
 
-var id = process.argv[2]
 var filename = process.argv[3]
 
-if (!id || !filename) {
-  console.log('Usage: node server.js [id] [filename]')
+if (!filename) {
+  console.log('Usage: node server.js [filename]')
   process.exit(1)
 }
 
@@ -19,44 +21,57 @@ var FILE_LENGTH = fs.statSync(filename).size
 var file = fsChunkStore(CHUNK_SIZE, {path: filename, length: FILE_LENGTH})
 var channel = DC({dht: false}) // set true to work over the internet
 
-var server = net.createServer(function (socket) {
-  console.log('New peer connected: %s:%s', socket.remoteAddress, socket.remotePort)
+pump(fs.createReadStream(filename), hasher(CHUNK_SIZE, function (err, hashes) {
+  if (err) throw err
 
-  // Wrap our TCP socket with a msgpack5 protocol wrapper
-  var protocol = msgpack(socket)
+  console.log(hashes)
 
-  protocol.on('error', console.log)
+  var id = crypto.createHash('sha256')
+    .update(hashes.join('\n'))
+    .digest()
+    .toString('hex')
 
-  protocol.on('data', function (msg) {
-    console.log(msg)
-    switch (msg.type) {
-      case 'request':
-        if (msg.index === undefined) {
-          console.log('no index')
-          protocol.destroy()
-          return
-        }
+  var server = net.createServer(function (socket) {
+    console.log('New peer connected: %s:%s', socket.remoteAddress, socket.remotePort)
 
-        file.get(msg.index, function (err, data) {
-          if (err) {
-            protocol.destroy(err)
+    // Wrap our TCP socket with a msgpack5 protocol wrapper
+    var protocol = msgpack(socket)
+
+    protocol.on('error', console.log)
+
+    protocol.on('data', function (msg) {
+      switch (msg.type) {
+        case 'hashes':
+          protocol.write({ type: 'hashes', hashes })
+          break
+        case 'request':
+          if (msg.index === undefined) {
+            console.log('no index')
+            protocol.destroy()
             return
           }
-          protocol.write({
-            type: 'response',
-            index: msg.index,
-            data
-          })
-        })
-        return
-      default:
-        protocol.destroy(new Error('unkown type'))
-        return
-    }
-  })
-})
 
-server.listen(function () {
-  channel.join(id, server.address().port)
-  console.log('Sharing %s as %s', filename, id)
-})
+          file.get(msg.index, function (err, data) {
+            if (err) {
+              protocol.destroy(err)
+              return
+            }
+            protocol.write({
+              type: 'response',
+              index: msg.index,
+              data
+            })
+          })
+          return
+        default:
+          protocol.destroy(new Error('unkown type'))
+          return
+      }
+    })
+  })
+
+  server.listen(function () {
+    channel.join(id, server.address().port)
+    console.log('Sharing %s as %s', filename, id)
+  })
+}))

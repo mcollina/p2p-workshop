@@ -4,6 +4,7 @@ var fs = require('fs')
 var net = require('net')
 var DC = require('discovery-channel')
 var msgpack = require('msgpack5-stream')
+var crypto = require('crypto')
 
 var id = process.argv[2]
 var chunk = process.argv[3]
@@ -24,17 +25,41 @@ channel.once('peer', function (peerId, peer, type) {
   // Wrap our TCP socket with a msgpack5 protocol wrapper
   var protocol = msgpack(socket)
 
-  protocol.on('data', function (msg) {
-    // For now just output the message we got from the server
-    console.log(msg)
-    protocol.destroy()
-    channel.destroy()
+  protocol.write({
+    type: 'hashes'
   })
 
-  console.log('Fetching chunk %d from %s...', chunk, id)
+  protocol.once('data', function (msg) {
+    var hashes = msg.hashes
 
-  protocol.write({
-    type: 'request',
-    index: chunk
+    if (!hashes) {
+      throw new Error('no hashes')
+    }
+
+    protocol.on('data', function (msg) {
+      var hash = crypto.createHash('sha256')
+        .update(msg.data)
+        .digest()
+        .toString('hex')
+
+      if (hash !== hashes[chunk]) {
+        console.log('HASH DOES NOT MATCH')
+        process.exit(0)
+      }
+
+      console.log('chunk hash match')
+
+      // For now just output the message we got from the server
+      console.log(msg)
+      protocol.destroy()
+      channel.destroy()
+    })
+
+    console.log('Fetching chunk %d from %s...', chunk, id)
+
+    protocol.write({
+      type: 'request',
+      index: chunk
+    })
   })
 })
