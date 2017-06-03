@@ -9,7 +9,7 @@ var hasher = require('fixed-size-chunk-hashing')
 var crypto = require('crypto')
 var pump = require('pump')
 
-var filename = process.argv[3]
+var filename = process.argv[2]
 
 if (!filename) {
   console.log('Usage: node server.js [filename]')
@@ -41,8 +41,8 @@ pump(fs.createReadStream(filename), hasher(CHUNK_SIZE, function (err, hashes) {
 
     protocol.on('data', function (msg) {
       switch (msg.type) {
-        case 'hashes':
-          protocol.write({ type: 'hashes', hashes })
+        case 'file':
+          protocol.write({ type: 'hashes', size: FILE_LENGTH, hashes, chunkSize: CHUNK_SIZE })
           break
         case 'request':
           if (msg.index === undefined) {

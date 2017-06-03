@@ -4,17 +4,19 @@ var fs = require('fs')
 var net = require('net')
 var DC = require('discovery-channel')
 var msgpack = require('msgpack5-stream')
+var fsChunkStore = require('fs-chunk-store')
 var crypto = require('crypto')
 
 var id = process.argv[2]
-var chunk = process.argv[3]
+var dest = process.argv[3] || 'file-' + Date.now()
 
-if (!id || !chunk) {
-  console.log('Usage: node client.js [id] [chunk]')
+if (!id) {
+  console.log('Usage: node client.js id [dest]')
   process.exit(1)
 }
 
 var channel = DC({dht: false}) // set true to work over the internet
+var finished = false
 channel.join(id)
 
 channel.once('peer', function (peerId, peer, type) {
@@ -26,40 +28,62 @@ channel.once('peer', function (peerId, peer, type) {
   var protocol = msgpack(socket)
 
   protocol.write({
-    type: 'hashes'
+    type: 'file'
   })
 
   protocol.once('data', function (msg) {
     var hashes = msg.hashes
+    var size = msg.size
+    var chunkSize = msg.chunkSize
 
-    if (!hashes) {
-      throw new Error('no hashes')
+    if (!hashes || !size) {
+      throw new Error('no hashes or no size')
+    }
+
+    var file = fsChunkStore(chunkSize, {path: dest, length: size})
+    var received = []
+    var totalChunks = 0
+
+    for (var i = 0; i < hashes.length; i++) {
+      protocol.write({
+        type: 'request',
+        index: i
+      })
     }
 
     protocol.on('data', function (msg) {
+      var index = msg.index
+      console.log('received', index, totalChunks++)
       var hash = crypto.createHash('sha256')
         .update(msg.data)
         .digest()
         .toString('hex')
 
-      if (hash !== hashes[chunk]) {
+      if (hash !== hashes[index]) {
         console.log('HASH DOES NOT MATCH')
         process.exit(0)
       }
 
-      console.log('chunk hash match')
+      received[index] = hash
 
-      // For now just output the message we got from the server
-      console.log(msg)
-      protocol.destroy()
-      channel.destroy()
-    })
+      file.put(index, msg.data, function (err) {
+        if (err) {
+          throw err
+        }
 
-    console.log('Fetching chunk %d from %s...', chunk, id)
+        if (!finished && totalChunks === hashes.length) {
+          finished = true
 
-    protocol.write({
-      type: 'request',
-      index: chunk
+          for (var i = 0; i < hashes.length; i++) {
+            if (hashes[i] !== received[i]) {
+              throw new Error('something murky is going on ' + i)
+            }
+
+            protocol.destroy()
+            channel.destroy()
+          }
+        }
+      })
     })
   })
 })
